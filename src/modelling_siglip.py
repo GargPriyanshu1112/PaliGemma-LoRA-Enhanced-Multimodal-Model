@@ -1,0 +1,178 @@
+# TODO: Go through the video. 2:04:00
+
+import torch
+from torch import nn
+import torch.nn.functional as F
+
+class SiglipVisionConfig:
+    def __init__(
+        self,
+        num_channels=3,
+        image_size=224,
+        patch_size=16,
+        embed_dim=768, 
+        num_attention_heads=12,
+        num_hidden_layers=12, 
+        attention_dropout=0.0,
+        layer_norm_eps=1e-6,  
+        intermediate_size=3072,
+        num_image_tokens=None,
+        **kwargs
+    ):
+        super().__init__()
+        self.num_channels = num_channels
+        self.image_size = image_size
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
+        self.num_attention_heads = num_attention_heads
+        self.num_hidden_layers = num_hidden_layers 
+        self.attention_dropout = attention_dropout
+        self.layer_norm_eps = layer_norm_eps
+        self.intermediate_size = intermediate_size
+        self.num_image_tokens = num_image_tokens
+
+
+# Adds more params in the model giving it more representational power.
+# Adds non-linearity, allowing the model to model complex transformations.
+class SiglipMLP(nn.Module):
+    def __init__(self, config: SiglipVisionConfig):
+        super().__init__()
+        self.config = config
+        self.fc1 = nn.Linear(config.embed_dim, config.intermediate_size)
+        self.fc2 = nn.Linear(config.intermediate_size, config.embed_dim)
+
+    def forward(self, hidden_states):
+        hidden_states = self.fc1(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, intermediate_size]
+        hidden_states = F.gelu(hidden_states, approximate="tanh")
+        hidden_states = self.fc2(hidden_states) # [b, num_patches, intermediate_size] -> [b, num_patches, embed_dim]
+        return hidden_states # [b, num_patches, embed_dim]
+    
+
+class SiglipAttention(nn.Module):
+    def __init__(self, config: SiglipVisionConfig):
+        super().__init__()
+        self.config = config
+        self.num_heads = config.num_attention_heads
+        self.head_dim = config.embed_dim // config.num_attention_heads
+        self.scale = self.head_dim ** -0.5
+        self.attn_dropout = config.attention_dropout
+        self.wq = nn.Linear(config.embed_dim, config.embed_dim)
+        self.wk = nn.Linear(config.embed_dim, config.embed_dim)
+        self.wv = nn.Linear(config.embed_dim, config.embed_dim)
+        self.wo = nn.Linear(config.embed_dim, config.embed_dim)
+
+    def forward(self, hidden_states):
+        batch_size, num_patches, _ = hidden_states.shape
+
+        q = self.wq(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
+        k = self.wk(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
+        v = self.wv(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
+    
+        q = q.reshape(batch_size, num_patches, self.num_heads, self.head_dim).permute(0, 2, 1, 3).contiguous() # [b, num_heads, num_patches, head_dim]
+        k = k.reshape(batch_size, num_patches, self.num_heads, self.head_dim).permute(0, 2, 1, 3).contiguous() # [b, num_heads, num_patches, head_dim]
+        v = v.reshape(batch_size, num_patches, self.num_heads, self.head_dim).permute(0, 2, 1, 3).contiguous() # [b, num_heads, num_patches, head_dim]
+        
+        attn_scores = torch.matmul(q, k.transpose(2, 3)) * self.scale # [b, num_heads, num_patches, num_patches]
+        
+        attn_probs = F.softmax(attn_scores, dim=-1).to(q.dtype) # [b, num_heads, num_patches, num_patches]
+        attn_probs = F.dropout(attn_probs, p=self.attn_dropout, training=self.training) # [b, num_heads, num_patches, num_patches]
+        
+        attn_outputs = torch.matmul(attn_probs, v) # [b, num_heads, num_patches, head_dim]
+        attn_outputs = attn_outputs.transpose(1, 2).contiguous() # [b, num_patches, num_heads, head_dim]
+        attn_outputs = attn_outputs.reshape(batch_size, num_patches, -1) # [b, num_patches, embed_dim]
+        attn_outputs = self.wo(attn_outputs) # [b, num_patches, embed_dim]
+
+        return attn_outputs, attn_probs
+
+
+class SiglipEncoderLayer(nn.Module):
+    def __init__(self, config: SiglipVisionConfig):
+        super().__init__()
+        self.config = config
+        self.embed_dim = config.embed_dim
+        self.layernorm1 = nn.LayerNorm(config.embed_dim, eps=config.layer_norm_eps)
+        self.self_attn = SiglipAttention(config)
+        self.layernorm2 = nn.LayerNorm(config.embed_dim, eps=config.layer_norm_eps)
+        self.mlp = SiglipMLP(config)
+
+    def forward(self, hidden_states):
+        residual = hidden_states # [b, num_patches, embed_dim]
+        hidden_states = self.layernorm1(hidden_states) # [b, num_patches, embed_dim]
+        hidden_states, _ = self.self_attn(hidden_states) # [b, num_patches, embed_dim]
+        hidden_states += residual # [b, num_patches, embed_dim]
+        residual = hidden_states # [b, num_patches, embed_dim]
+        hidden_states = self.layernorm2(hidden_states) # [b, num_patches, embed_dim]
+        hidden_states = self.mlp(hidden_states) # [b, num_patches, embed_dim]
+        hidden_states += residual # [b, num_patches, embed_dim]
+        return hidden_states # [b, num_patches, embed_dim]
+
+
+class SiglipEncoder(nn.Module):
+    def __init__(self, config: SiglipVisionConfig):
+        super().__init__()
+        self.config = config
+        self.encoder_layers = nn.ModuleList(
+            [SiglipEncoderLayer(config)  for _ in range(config.num_hidden_layers)]
+        )
+
+    def forward(self, patch_embeds):
+        hidden_states = patch_embeds # [b, num_patches, embed_dim]
+        for encoder_layer in self.encoder_layers:
+            hidden_states = encoder_layer(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
+        return hidden_states # [b, num_patches, embed_dim]
+    
+
+class SiglipVisionEmbeddings(nn.Module):
+    def __init__(self, config: SiglipVisionConfig):
+        super().__init__()
+        self.config = config
+        self.patch_embedding = nn.Conv2d(
+            in_channels=config.num_channels,
+            out_channels=config.embed_dim,
+            kernel_size=config.patch_size,
+            stride=config.patch_size, # for no overlap between patches
+            padding="valid" # no padding
+        )
+        self.num_patches = (config.image_size // config.patch_size) ** 2
+        # In vanilla Transformers, positional information is encoded using fixed sinusoidal functions.
+        # These values are pre-computed and not learnable. The model learns to interpret these encodings 
+        # but can't modify them. In ViT, positional embeddings are learnable parameters allowing the 
+        # model to discover and learn whichever patterns it finds most useful during training.
+        self.position_embedding = nn.Embedding(num_embeddings=self.num_patches, embedding_dim=config.embed_dim)
+        self.register_buffer(
+            "patch_pos_ids",
+            tensor=torch.arange(self.num_patches).expand((1, -1)), # [1, num_patches-1]
+            persistent=False # not saved in checkpoints
+        )
+        
+    def forward(self, pixel_values):
+        patch_embeds = self.patch_embedding(pixel_values) # [b, c, h, w] -> [b, embed_dim, h//patch_size, w//patch_size]
+        patch_embeds = patch_embeds.flatten(start_dim=2) # [b, embed_dim, h//patch_size * w//patch_size]
+        patch_embeds = patch_embeds.permute(0, 2, 1) # [b, num_patches, embed_dim]
+        patch_embeds = patch_embeds + self.position_embedding(self.patch_pos_ids) # [b, num_patches, embed_dim] + [1, num_patches, embed_dim]
+        return patch_embeds # [b, num_patches, embed_dim]
+    
+
+class SiglipVisionTransformer(nn.Module):
+    def __init__(self, config: SiglipVisionConfig):
+        super().__init__()
+        self.config = config
+        self.embeddings = SiglipVisionEmbeddings(config)
+        self.encoder = SiglipEncoder(config)
+        self.post_layernorm = nn.LayerNorm(config.embed_dim, eps=config.layer_norm_eps)
+
+    def forward(self, pixel_values):
+        patch_embeds  = self.embeddings(pixel_values) # [b, c, h, w] -> [b, num_patches, embed_dim]
+        hidden_states = self.encoder(patch_embeds) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
+        hidden_states = self.post_layernorm(hidden_states) # [b, num_patches, embed_dim]
+        return hidden_states # [b, num_patches, embed_dim]
+    
+
+class SiglipVisionModel(nn.Module):
+    def __init__(self, config: SiglipVisionConfig):
+        super().__init__()
+        self.config = config
+        self.vision_model = SiglipVisionTransformer(config)
+
+    def forward(self, pixel_values):
+        return self.vision_model(pixel_values) # [b, c, h, w] -> [b, num_patches, embed_dim]
