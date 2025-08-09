@@ -257,7 +257,7 @@ class GemmaModel(nn.Module):
         # Create position embeddings to be shared across decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)      
 
-        normalizer = torch.tensor(self.config.hidden_size*0.5, dtype=hidden_states.dtype)
+        normalizer = torch.tensor(self.config.hidden_size**0.5, dtype=hidden_states.dtype)
         hidden_states = hidden_states * normalizer # [b, seq_len, hidden_size]
 
         for decoder_layer in self.layers:
