@@ -117,14 +117,21 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         ## --------------------- Create position-ids for Rotary Positional Embedding (RoPE) --------------------- ## 
         if attention_mask is not None:
             # Create position-ids using attention mask. For padding tokens use 1 as position id.
-            # Process:  
-            #   attention_mask == [[0, 0, 1, 1, 1, 1, 1]]                               ; [b, seq_len]
-            #   attention_mask.cumsum(-1) -> [[0, 0, 1, 2, 3, 4, 5]]                    ; [b, seq_len]
-            #   attention_mask.cumsum(-1).masked_fill_(...) -> [[1, 1, 1, 2, 3, 4, 5]]  ; [b, seq_len]
-            #  
+            # E.g,
+            #  If mask == [0, 0, 1, 1, 1],
+            #  The logic is:
+            #  1. cumsum()    -> [0, 0, 1, 2, 3] 
+            #  2. - 1         -> [-1, -1, 0, 1, 2]
+            #  3. masked_fill -> [1, 1, 0, 1, 2]
+            #             
             # Note: This does not introduce extra/garbage information, since padding tokens are
             #       anyways masked out and not used during the attention process/loss calculation.
-            position_ids = (attention_mask.cumsum(-1)).masked_fill_((attention_mask == 0), 1) # [b, seq_len]
+            # 
+            # https://github.com/huggingface/transformers/issues/36856
+            # https://github.com/huggingface/transformers/blob/7f79a97399bb52aad8460e1da2f36577d5dccfed/src/transformers/models/paligemma/modeling_paligemma.py#L563
+            position_ids = attention_mask.long().cumsum(-1).to(device=attention_mask.device) - 1 # [b, seq_len]
+            position_ids = position_ids.masked_fill(attention_mask == 0, 1) # [b, seq_len]
+            # print("position_ids", position_ids, position_ids.shape)
         else:
             position_ids = None  
 
@@ -175,22 +182,14 @@ class PaliGemmaForConditionalGeneration(nn.Module):
             final_labels = None
         return merged_embeds, causal_mask, final_labels, position_ids
     
-    def forward(self, input_ids, pixel_values, attention_mask, labels, token_type_ids, cache_position, kv_cache):
-        """
-        input_ids         [b, seq_len] ; tokenized sequences
-        pixel_values      [b, c, h, w] ;
-        attention_mask    [b, seq_len] ; returned by tokenizer (0: padding tokens, 1: rest)
-        labels            [b, seq_len] ;
-        token_type_ids    [b, seq_len] ; (0: image/prefix token, 1: suffix token) 
-        cache_position                 ; None initially      
-        kv_cache          self.k_cache==[], v_cache==[]
-        """         
+    def forward(self, input_ids, pixel_values, attention_mask, labels, token_type_ids, cache_position, kv_cache):        
         input_attention_mask = attention_mask # store the original attention mask. 
 
         # Gemma's embedding module wasn't trained on the image placeholder token, i.e. <image>
         # Therefore this token's generated embedding will be junk. These embeddings will later
         #  be replaced by the contextualized image patch features returned by image encoder.
         input_embeds = self.language_model.get_input_embeddings(input_ids) # [b, seq_len] -> [b, seq_len, hidden_size]
+        # print("input_embeds", input_embeds.shape)
         
         # The following if-block executes during *training* and *pre-filling stage of inference*
         if pixel_values is not None and input_ids.shape[1] != 1: 
@@ -211,18 +210,19 @@ class PaliGemmaForConditionalGeneration(nn.Module):
                 token_type_ids, 
                 cache_position
             )
+            # print("attention_mask", attention_mask.shape)
         else: # if token generation phase (after prefilling)
             if pixel_values is not None and kv_cache is not None and input_ids.shape[1] == 1:
                 first_layer_past_key_value = kv_cache[0][0][:, :, :, 0] # [b, num_heads, seq_len_cached] ; first layer's key tensor
                 batch_index, non_attended_tokens = torch.where(first_layer_past_key_value.float().sum(-2) == 0)
                 # Get cached sequence length (image tokens + prefix token + output_tokens_produced_so_far)
-                target_seqlen = kv_cache.get_seq_length() + 1 # cache_position[-1] + 1 
+                target_seqlen = kv_cache.get_seq_length() + 1
                 
                 extended_attention_mask = torch.ones(
-                    (attention_mask.shape[0], target_seqlen - attention_mask.shape[1] + 1), 
+                    (attention_mask.shape[0], target_seqlen - attention_mask.shape[1]), # [b, (cached_seq_len - seq_len_image_plus_prefix)] -> [b, Δ] ; Δ <=> num_generated_tokens  
                     dtype=attention_mask.dtype,
                     device=attention_mask.device,
-                ) # [b, (seq_len_cached - current_seq_len + 1)] -> [b, Δ] ; usually (Δ == 1)
+                )
                 # Filter out only the tokens that can be un-attended, this can happen
                 # if one uses PaliGemma+ Fused modules where the cache on the
                 # first iteration is already big enough, or if one passes custom cache
@@ -230,8 +230,10 @@ class PaliGemmaForConditionalGeneration(nn.Module):
                 new_batch_index = batch_index[valid_indices]
                 new_non_attended_tokens = non_attended_tokens[valid_indices]
                 extended_attention_mask[new_batch_index, new_non_attended_tokens] = 0
+                # print("extended_attention_mask", extended_attention_mask.shape)
 
                 attention_mask = torch.cat((attention_mask, extended_attention_mask), dim=1) # [b, seq_len_cached + Δ] ; binary mask
+                # print("attention_mask", attention_mask.shape)
 
                 # Compute the position ID for the current input query token. We do this by counting
                 # how many tokens are "active" (i.e. not masked) in the attention mask. Since position 
@@ -240,10 +242,9 @@ class PaliGemmaForConditionalGeneration(nn.Module):
                 #   attention_mask = [
                 #     [ 1, 1, 1, 1 ],    → 4 active tokens → position_ids = [3]
                 #     [ 0, 0, 1, 1 ]     → 2 active tokens → position_ids = [1]
-                #   ]            \
-                #                ↓ 
-                #  (for current input query token)
+                #   ]
                 position_ids = torch.sum(attention_mask, dim=1).unsqueeze(-1) - 1 # [b, 1]
+                # print("position_ids", position_ids, position_ids.shape)
 
                 # 1. Since tokens are generated autoregressively, at each step t, only one query token 
                 #    (most recent generated token) is passed in. 
@@ -260,13 +261,13 @@ class PaliGemmaForConditionalGeneration(nn.Module):
     
         outputs = self.language_model(
             input_embeds, attention_mask, position_ids, kv_cache, cache_position
-        ) # dict (loss, logits, kv_cache)
+        ) # dict (logits, kv_cache)
 
         logits = outputs['logits'] # [b, seq_len, vocab_size]
         logits = logits.float()
         
         loss = None
-        if labels is not None:
+        if labels is not None: # if *training* stage
             # Discard last prediction as there is no next token to compare it to
             shift_logits = logits[..., :-1, :]
             # Discard first label token since the model begins predicting from the second token, using the first as context.
