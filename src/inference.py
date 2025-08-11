@@ -1,4 +1,3 @@
-import fire
 import torch
 from PIL import Image
 from utils import get_torch_device, load_model
@@ -62,7 +61,8 @@ def test_inference(
     kv_cache = KVCache()
     
     generated_tokens = []
-    for idx, _ in enumerate(range(max_tokens_to_generate)):
+    for _ in range(max_tokens_to_generate):
+        # print("\ncache length", kv_cache.get_seq_length())
         outputs = model(
             input_ids, pixel_values, attention_mask, labels, token_type_ids, cache_position, kv_cache
         )
@@ -80,16 +80,11 @@ def test_inference(
         generated_tokens.append(next_token)
         if next_token.item() == stop_token:
             break
-        # Append the next token to the input
         input_ids = next_token.unsqueeze(-1)
-        print(idx, input_ids)
-        attention_mask = torch.cat(
-            [attention_mask, torch.ones((1,1), device=input_ids.device)], dim=-1
-        )
     
     generated_tokens = torch.cat(generated_tokens, dim=-1)
     decoded_seqs = processor.tokenizer.decode(generated_tokens, skip_special_tokens=True)
-    print(decoded_seqs)
+    # print(prompt_l[0] + decoded_seqs)
     return decoded_seqs
 
 def main(
@@ -99,7 +94,7 @@ def main(
     max_tokens_to_generate=100, 
     temperature=0.8, 
     top_p=0.9, 
-    do_sample=False
+    do_sample=True
 ):
     device = get_torch_device()
 
@@ -127,4 +122,4 @@ def main(
 
 if __name__ == '__main__':
     # fire.Fire(main)
-    main(r"C:\Users\ADMIN\Downloads\paligemma-3b-pt-224-model-files", ["this building is "], [r"C:/Users/ADMIN/Pictures/Camera Roll/WIN_20250213_14_38_50_Pro.jpg"])
+    main(r"C:\Users\ADMIN\Downloads\paligemma-3b-pt-224-model-files", ["Caption this image"], [r"C:\Users\ADMIN\Downloads\test_imagePG.jpg"])
