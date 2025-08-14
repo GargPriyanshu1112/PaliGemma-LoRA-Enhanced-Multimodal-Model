@@ -12,8 +12,6 @@ def get_torch_device():
 def load_model(model_path, device, framework='pt'):
     if not device:
         device = get_torch_device()
-
-    tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side='right')
     
     safetensors_file_l = glob(os.path.join(model_path, '*.safetensors'))
     tensors = {}
@@ -30,7 +28,13 @@ def load_model(model_path, device, framework='pt'):
     model = PaliGemmaForConditionalGeneration(config)
     model.load_state_dict(tensors, strict=False)
     model.tie_weights()
-    return model, tokenizer
+    return model
+
+def load_tokenizer(pretrained_model_name_or_path):
+    tokenizer =  AutoTokenizer.from_pretrained(
+        pretrained_model_name_or_path, padding_side='left'
+    )
+    return tokenizer
 
 # https://www.youtube.com/watch?v=XYi2-LPrwm4&t=439s
 def calc_levenshtein_distance(word1: str, word2: str) -> int:
