@@ -34,7 +34,7 @@ class PaliGemmaProcessor:
         self.tokenizer = tokenizer
         self.img_placeholder_token_id = self.tokenizer.convert_tokens_to_ids(self.IMG_PLACEHOLDER_TOKEN)
 
-    def __call__(self, images, texts, suffix=None, padding="longest", max_length=None, truncation='longest_first', return_tensors='pt'):
+    def __call__(self, images, texts, suffix=None, padding="longest", max_length=None, truncation=False, return_tensors='pt'):
         pixel_values = process_images(
             images,
             size=(self.image_size, self.image_size),
@@ -65,7 +65,7 @@ class PaliGemmaProcessor:
             max_length=max_length, # image tokens + prefix + suffix 
             truncation=truncation,
             return_token_type_ids=return_token_type_ids,
-        ) # returns `input_ids`, `attention_mask`, `token_type_ids` (only training)
+        ) # returns `input_ids`, `attention_mask`, `token_type_ids` & 'labels' (only training)
         
         return_data  = {"pixel_values": pixel_values, **inputs}
         # If training, ignore prefix so that loss is only computed for the target tokens (-100: ignore index)
@@ -73,3 +73,9 @@ class PaliGemmaProcessor:
             labels = inputs["input_ids"].masked_fill(inputs["token_type_ids"] == 0, -100)
             return_data['labels'] = labels
         return return_data 
+    
+    def decode(self, *args, **kwargs):
+        return self.tokenizer.decode(*args, **kwargs)
+
+    def batch_decode(self, *args, **kwargs):
+        return self.tokenizer.batch_decode(*args, **kwargs)
