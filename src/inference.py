@@ -1,20 +1,8 @@
 import torch
 from PIL import Image
-from utils import get_torch_device, load_model
 from processing_paligemma import PaliGemmaProcessor
 from modelling_paligemma import KVCache
-
-def move_inputs_to_device(model_inputs, device):
-    model_inputs = {k: v.to(device) for k,v in model_inputs.items()}
-    return model_inputs
-
-def get_model_inputs(image_path_l, prompt_l, processor, device):
-    model_inputs = processor(
-        [Image.open(path) for path in image_path_l],
-        prompt_l, 
-    )
-    model_inputs = move_inputs_to_device(model_inputs, device)
-    return model_inputs
+from utils import get_torch_device, move_to_device, load_tokenizer, load_model
 
 def _sample_top_p(probs, p):
     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True) # [b, vocab_size]
@@ -37,21 +25,29 @@ def _sample_top_p(probs, p):
     next_token = torch.gather(probs_idx, -1, next_token_idx)
     return next_token
 
-def test_inference(
+@torch.inference_mode()
+def generate(
     model,
     processor,
-    device,
     prompt_l,
     image_path_l,
     max_tokens_to_generate,
     temperature,
     top_p,
-    do_sample
+    do_sample,
+    device=None
 ):
-    model_inputs = get_model_inputs(image_path_l, prompt_l, processor, device)
-    
-    stop_token = processor.tokenizer.eos_token_id
+    if not device:
+        device = get_torch_device()
 
+    model.eval()
+
+    model_inputs = processor(
+        [Image.open(path) for path in image_path_l],
+        prompt_l, 
+    )
+    model_inputs = move_to_device(model_inputs, device)
+    
     input_ids = model_inputs['input_ids']
     pixel_values = model_inputs['pixel_values']
     attention_mask = model_inputs['attention_mask']
@@ -59,6 +55,7 @@ def test_inference(
     token_type_ids = None
     cache_position = None
     kv_cache = KVCache()
+    stop_token = processor.tokenizer.eos_token_id
     
     generated_tokens = []
     for _ in range(max_tokens_to_generate):
@@ -84,42 +81,41 @@ def test_inference(
     
     generated_tokens = torch.cat(generated_tokens, dim=-1)
     decoded_seqs = processor.tokenizer.decode(generated_tokens, skip_special_tokens=True)
-    # print(prompt_l[0] + decoded_seqs)
     return decoded_seqs
 
-def main(
-    model_path=None, 
-    prompt_l=None, 
-    image_path_l=None, 
-    max_tokens_to_generate=100, 
-    temperature=0.8, 
-    top_p=0.9, 
+if __name__ == '__main__':
+    model_path = r"C:\Users\ADMIN\Downloads\paligemma_3b_pt_224_model_files"
+    prompt_l = ["Name the monument."]
+    image_path_l = [r"C:\Users\ADMIN\Downloads\Taj-Mahal-Agra-India.png"]
+    max_tokens_to_generate=100 
+    temperature=0.8
+    top_p=0.9
     do_sample=True
-):
+    
     device = get_torch_device()
 
-    print("Loading the model.")
-    model, tokenizer = load_model(model_path, device)
-    model = model.to(device).eval()
+    print("Loading tokenizer...")
+    tokenizer = load_tokenizer(model_path)
+
+    print("Loading model...")
+    model = load_model(model_path, device)
+    model.eval()
 
     image_size = model.config.vision_config.image_size
     num_image_tokens = model.config.vision_config.num_image_tokens
     processor = PaliGemmaProcessor(image_size, num_image_tokens, tokenizer)
 
-    print('Running inference')
+    print('Generating output...')
     with torch.no_grad():
-        test_inference(
+        outputs = generate(
             model,
             processor,
-            device,
             prompt_l,
             image_path_l,
             max_tokens_to_generate,
             temperature,
             top_p,
-            do_sample
+            do_sample,
+            device
         )
-
-if __name__ == '__main__':
-    # fire.Fire(main)
-    main(r"C:\Users\ADMIN\Downloads\paligemma-3b-pt-224-model-files", ["Caption this image"], [r"C:\Users\ADMIN\Downloads\test_imagePG.jpg"])
+    print(outputs)
