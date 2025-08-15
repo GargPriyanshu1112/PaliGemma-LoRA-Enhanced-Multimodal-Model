@@ -4,8 +4,6 @@ import random
 from datasets import load_dataset
 from torch.utils.data import Dataset
 
-MAX_LENGTH = 512
-
 def json2token(obj: dict | str):
     if isinstance(obj, dict):
         output = ''
@@ -96,31 +94,31 @@ class HFDatasetWrapper(Dataset):
         return image, label
 
 
-def train_collate_fn(samples, processor, prompt):
+def train_collate_fn(samples, processor, prompt, padding='longest', max_length=None, truncation=False):
     images  = [sample[0].convert('RGB') for sample in samples] 
-    prefix = ['<image>' + prompt for _ in samples]
+    prefix = [prompt for _ in samples]
     suffix = [sample[1] for sample in samples]
      
     inputs = processor(
         images=images, 
         texts=prefix, 
         suffix=suffix,
-        padding='longest',
-        max_length=MAX_LENGTH,
-        truncation='longest_first',
+        padding=padding,
+        max_length=max_length,
+        truncation=truncation,
     )
     return inputs
 
-def eval_collate_fn(samples, processor, prompt):
+def eval_collate_fn(samples, processor, prompt, padding='longest', max_length=None, truncation=False):
     images = [sample[0].convert('RGB') for sample in samples] 
-    prefix = ['<image>' + prompt for _ in samples]
+    prefix = [prompt for _ in samples]
     outputs = [sample[1] for sample in samples]
      
     inputs = processor(
         images=images, 
         texts=prefix,
-        padding='longest',
-        max_length=MAX_LENGTH,
-        truncation='longest_first',
+        padding=padding,
+        max_length=max_length,
+        truncation=truncation,
     )
     return inputs, outputs
