@@ -9,7 +9,7 @@ from modelling_paligemma import PaliGemmaConfig, PaliGemmaForConditionalGenerati
 def get_torch_device():
     return 'cuda' if torch.cuda.is_available() else 'cpu'
 
-def load_model(model_path, device, framework='pt'):
+def load_model(model_path, device=None, framework='pt'):
     if not device:
         device = get_torch_device()
     
@@ -28,6 +28,7 @@ def load_model(model_path, device, framework='pt'):
     model = PaliGemmaForConditionalGeneration(config)
     model.load_state_dict(tensors, strict=False)
     model.tie_weights()
+    model.to(device)
     return model
 
 def load_tokenizer(pretrained_model_name_or_path):
@@ -35,6 +36,15 @@ def load_tokenizer(pretrained_model_name_or_path):
         pretrained_model_name_or_path, padding_side='left'
     )
     return tokenizer
+
+def move_to_device(obj, device):
+    if isinstance(obj, torch.Tensor):
+        obj.to(device)
+    elif isinstance(obj, dict):
+        obj = {k: move_to_device(v, device) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        obj = type(obj)(move_to_device(e, device) for e in obj)
+    return obj
 
 # https://www.youtube.com/watch?v=XYi2-LPrwm4&t=439s
 def calc_levenshtein_distance(word1: str, word2: str) -> int:
