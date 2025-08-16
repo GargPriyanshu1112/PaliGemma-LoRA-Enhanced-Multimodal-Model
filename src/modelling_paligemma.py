@@ -182,7 +182,7 @@ class PaliGemmaForConditionalGeneration(nn.Module):
             final_labels = None
         return merged_embeds, causal_mask, final_labels, position_ids
     
-    def forward(self, input_ids, pixel_values, attention_mask, labels, token_type_ids, cache_position, kv_cache):        
+    def forward(self, input_ids, pixel_values, attention_mask, labels, token_type_ids, kv_cache):        
         input_attention_mask = attention_mask # store the original attention mask. 
 
         # Gemma's embedding module wasn't trained on the image placeholder token, i.e. <image>
@@ -198,8 +198,7 @@ class PaliGemmaForConditionalGeneration(nn.Module):
             image_embeds = self.multi_modal_projector(image_embeds) # [b, num_patches, embed_dim] -> [b, num_patches, hidden_size] 
             assert input_embeds.shape[-1] == image_embeds.shape[-1], f"Mismatch b/w image patch embedding dim and text token embedding dim: {input_embeds[-1]} != {image_embeds[-1]}"
             
-            if cache_position is None:
-                cache_position = torch.arange(input_embeds.shape[1], device=input_embeds.device) # (seq_len,)
+            cache_position = torch.arange(input_embeds.shape[1], device=input_embeds.device) # (seq_len,)
 
             input_embeds, attention_mask, labels, position_ids = self._merge_input_ids_with_image_features(
                 input_ids,
@@ -260,7 +259,7 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         attention_mask = attention_mask.to(input_embeds.dtype)
     
         outputs = self.language_model(
-            input_embeds, attention_mask, position_ids, kv_cache, cache_position
+            input_embeds, attention_mask, position_ids, kv_cache
         ) # dict (logits, kv_cache)
 
         logits = outputs['logits'] # [b, seq_len, vocab_size]
@@ -286,5 +285,7 @@ class PaliGemmaForConditionalGeneration(nn.Module):
             
             loss_fct = nn.CrossEntropyLoss()
             loss = loss_fct(flat_logits, flat_labels)
-        return (loss,) + outputs if loss is not None else outputs
-    
+        
+        if loss is not None:
+            outputs['loss'] = loss
+        return outputs

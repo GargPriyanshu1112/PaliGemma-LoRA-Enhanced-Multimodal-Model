@@ -136,7 +136,7 @@ class GemmaAttention(nn.Module):
         self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * config.head_dim, bias=config.attention_bias)
         self.o_proj = nn.Linear(config.num_attention_heads * config.head_dim, config.hidden_size, bias=config.attention_bias)
     
-    def forward(self, hidden_states, attention_mask, position_embeddings, kv_cache, cache_position):
+    def forward(self, hidden_states, attention_mask, position_embeddings, kv_cache):
         input_shape = hidden_states.shape[: -1] # [b, seq_len]
         hidden_shape = (*input_shape, -1, self.head_dim) # [b , seq_len, -1, head_dim]
 
@@ -185,11 +185,11 @@ class GemmaDecoderLayer(nn.Module):
         self.post_attention_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.mlp = GemmaMLP(config)
 
-    def forward(self, hidden_states, attention_mask, position_embeddings, kv_cache, cache_position):
+    def forward(self, hidden_states, attention_mask, position_embeddings, kv_cache):
         residual = hidden_states # [b, q_len, hidden_size]
         hidden_states = self.input_layernorm(hidden_states) # [b, q_len, hidden_size]
         hidden_states, _ = self.self_attn(
-            hidden_states, attention_mask, position_embeddings, kv_cache, cache_position
+            hidden_states, attention_mask, position_embeddings, kv_cache
         ) # [b, q_len, hidden_size]
         hidden_states = residual + hidden_states # [b, q_len, hidden_size]
         residual = hidden_states # [b, q_len, hidden_size]
@@ -243,15 +243,7 @@ class GemmaModel(nn.Module):
         self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = GemmaRotaryEmbedding(config.head_dim, config.max_position_embeddings, config.rope_theta)
     
-    def forward(self, input_embeds, attention_mask, position_ids, kv_cache, cache_position):
-        if cache_position is None:
-            num_past_seen_tokens = kv_cache.get_seq_length() if kv_cache is not None else 0 # during training: 0, during inference: 0 (prefilling)
-            cache_position = torch.arange(
-                num_past_seen_tokens, 
-                num_past_seen_tokens + input_embeds.shape[1],
-                device=input_embeds.device
-            )
-            
+    def forward(self, input_embeds, attention_mask, position_ids, kv_cache):            
         hidden_states = input_embeds # [b, seq_len, hidden_size]
 
         # Create position embeddings to be shared across decoder layers
@@ -262,7 +254,7 @@ class GemmaModel(nn.Module):
 
         for decoder_layer in self.layers:
             hidden_states = decoder_layer(
-                hidden_states, attention_mask, position_embeddings, kv_cache, cache_position
+                hidden_states, attention_mask, position_embeddings, kv_cache
             ) # [b, seq_len, hidden_size] ; contextualized embeddings
         hidden_states = self.norm(hidden_states) # [b, seq_len, hidden_size]
         return hidden_states, kv_cache
@@ -281,9 +273,9 @@ class GemmaForCausalLM(nn.Module):
     def get_input_embeddings(self, input_ids):
         return self.model.embed_tokens(input_ids)
     
-    def forward(self, input_embeds, attention_mask, position_ids, kv_cache, cache_position):
+    def forward(self, input_embeds, attention_mask, position_ids, kv_cache):
         hidden_states, kv_cache = self.model(
-            input_embeds, attention_mask, position_ids, kv_cache, cache_position
+            input_embeds, attention_mask, position_ids, kv_cache
         ) # [b, seq_len, hidden_size] ; contextualized embeddings
         logits = self.lm_head(hidden_states) # [b, seq_len, vocab_size]
         
