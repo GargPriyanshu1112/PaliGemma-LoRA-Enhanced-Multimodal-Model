@@ -10,8 +10,8 @@ class PaliGemmaConfig():
         vision_config=None,
         text_config=None,
         ignore_index=-100, 
-        pad_token_id=None,
-        image_token_id=256000,
+        pad_token_id=0,
+        image_token_index=256000,
         vocab_size=257152,
         projection_dim=2048,
         **kwargs,
@@ -20,11 +20,9 @@ class PaliGemmaConfig():
         self.text_config = GemmaConfig(**text_config, pad_token_id=pad_token_id)
         self.ignore_index = ignore_index
         self.pad_token_id = pad_token_id
-        self.image_token_id = image_token_id
+        self.image_token_index = image_token_index
         self.vocab_size = self.text_config.vocab_size
         self.projection_dim = projection_dim
-        self.text_config.num_image_tokens = (self.vision_config.image_size // self.vision_config.patch_size) ** 2
-        self.vision_config.projection_dim = projection_dim
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -99,8 +97,8 @@ class PaliGemmaForConditionalGeneration(nn.Module):
 
         image_embeds = image_embeds / (hidden_size**0.5) # [b, num_patches, hidden_size] 
 
-        txt_mask = (input_ids != self.config.image_token_id) & (input_ids != self.config.pad_token_id) # [b, seq_len]
-        img_mask  = input_ids == self.config.image_token_id # [b, seq_len]
+        txt_mask = (input_ids != self.config.image_token_index) & (input_ids != self.config.pad_token_id) # [b, seq_len]
+        img_mask  = input_ids == self.config.image_token_index # [b, seq_len]
         pad_mask  = input_ids == self.config.pad_token_id # [b, seq_len]
 
         # Expand masks to match embeding dimension

@@ -18,7 +18,7 @@ class GemmaConfig():
         rope_theta=10000.0,
         attention_bias=False,
         attention_dropout=0.0,
-        pad_token_id=None,
+        pad_token_id=0,
         **kwargs
     ):
         super().__init__()

@@ -39,11 +39,11 @@ def load_tokenizer(pretrained_model_name_or_path):
 
 def move_to_device(obj, device):
     if isinstance(obj, torch.Tensor):
-        obj.to(device)
+        return obj.to(device)
     elif isinstance(obj, dict):
-        obj = {k: move_to_device(v, device) for k, v in obj.items()}
+        return {k: move_to_device(v, device) for k, v in obj.items()}
     elif isinstance(obj, (list, tuple)):
-        obj = type(obj)(move_to_device(e, device) for e in obj)
+        return type(obj)(move_to_device(e, device) for e in obj)
     return obj
 
 # https://www.youtube.com/watch?v=XYi2-LPrwm4&t=439s

@@ -56,17 +56,17 @@ class SiglipAttention(nn.Module):
         self.head_dim = config.embed_dim // config.num_attention_heads
         self.scale = self.head_dim ** -0.5
         self.attn_dropout = config.attention_dropout
-        self.wq = nn.Linear(config.embed_dim, config.embed_dim)
-        self.wk = nn.Linear(config.embed_dim, config.embed_dim)
-        self.wv = nn.Linear(config.embed_dim, config.embed_dim)
-        self.wo = nn.Linear(config.embed_dim, config.embed_dim)
+        self.q_proj = nn.Linear(config.embed_dim, config.embed_dim)
+        self.k_proj = nn.Linear(config.embed_dim, config.embed_dim)
+        self.v_proj = nn.Linear(config.embed_dim, config.embed_dim)
+        self.out_proj = nn.Linear(config.embed_dim, config.embed_dim)
 
     def forward(self, hidden_states):
         batch_size, num_patches, _ = hidden_states.shape
 
-        q = self.wq(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
-        k = self.wk(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
-        v = self.wv(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
+        q = self.q_proj(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
+        k = self.k_proj(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
+        v = self.v_proj(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
     
         q = q.reshape(batch_size, num_patches, self.num_heads, self.head_dim).permute(0, 2, 1, 3).contiguous() # [b, num_heads, num_patches, head_dim]
         k = k.reshape(batch_size, num_patches, self.num_heads, self.head_dim).permute(0, 2, 1, 3).contiguous() # [b, num_heads, num_patches, head_dim]
@@ -80,7 +80,7 @@ class SiglipAttention(nn.Module):
         attn_outputs = torch.matmul(attn_probs, v) # [b, num_heads, num_patches, head_dim]
         attn_outputs = attn_outputs.transpose(1, 2).contiguous() # [b, num_patches, num_heads, head_dim]
         attn_outputs = attn_outputs.reshape(batch_size, num_patches, -1) # [b, num_patches, embed_dim]
-        attn_outputs = self.wo(attn_outputs) # [b, num_patches, embed_dim]
+        attn_outputs = self.out_proj(attn_outputs) # [b, num_patches, embed_dim]
 
         return attn_outputs, attn_probs
 
@@ -90,18 +90,18 @@ class SiglipEncoderLayer(nn.Module):
         super().__init__()
         self.config = config
         self.embed_dim = config.embed_dim
-        self.layernorm1 = nn.LayerNorm(config.embed_dim, eps=config.layer_norm_eps)
+        self.layer_norm1 = nn.LayerNorm(config.embed_dim, eps=config.layer_norm_eps)
         self.self_attn = SiglipAttention(config)
-        self.layernorm2 = nn.LayerNorm(config.embed_dim, eps=config.layer_norm_eps)
+        self.layer_norm2 = nn.LayerNorm(config.embed_dim, eps=config.layer_norm_eps)
         self.mlp = SiglipMLP(config)
 
     def forward(self, hidden_states):
         residual = hidden_states # [b, num_patches, embed_dim]
-        hidden_states = self.layernorm1(hidden_states) # [b, num_patches, embed_dim]
+        hidden_states = self.layer_norm1(hidden_states) # [b, num_patches, embed_dim]
         hidden_states, _ = self.self_attn(hidden_states) # [b, num_patches, embed_dim]
         hidden_states += residual # [b, num_patches, embed_dim]
         residual = hidden_states # [b, num_patches, embed_dim]
-        hidden_states = self.layernorm2(hidden_states) # [b, num_patches, embed_dim]
+        hidden_states = self.layer_norm2(hidden_states) # [b, num_patches, embed_dim]
         hidden_states = self.mlp(hidden_states) # [b, num_patches, embed_dim]
         hidden_states += residual # [b, num_patches, embed_dim]
         return hidden_states # [b, num_patches, embed_dim]
@@ -111,13 +111,13 @@ class SiglipEncoder(nn.Module):
     def __init__(self, config: SiglipVisionConfig):
         super().__init__()
         self.config = config
-        self.encoder_layers = nn.ModuleList(
+        self.layers = nn.ModuleList(
             [SiglipEncoderLayer(config)  for _ in range(config.num_hidden_layers)]
         )
 
     def forward(self, patch_embeds):
         hidden_states = patch_embeds # [b, num_patches, embed_dim]
-        for encoder_layer in self.encoder_layers:
+        for encoder_layer in self.layers:
             hidden_states = encoder_layer(hidden_states) # [b, num_patches, embed_dim] -> [b, num_patches, embed_dim]
         return hidden_states # [b, num_patches, embed_dim]
     
@@ -134,6 +134,7 @@ class SiglipVisionEmbeddings(nn.Module):
             padding="valid" # no padding
         )
         self.num_patches = (config.image_size // config.patch_size) ** 2
+        assert self.num_patches == 256
         # In vanilla Transformers, positional information is encoded using fixed sinusoidal functions.
         # These values are pre-computed and not learnable. The model learns to interpret these encodings 
         # but can't modify them. In ViT, positional embeddings are learnable parameters allowing the 
