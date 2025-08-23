@@ -53,7 +53,6 @@ def generate(
     attention_mask = model_inputs['attention_mask']
     labels = None
     token_type_ids = None
-    cache_position = None
     kv_cache = KVCache()
     stop_token = processor.tokenizer.eos_token_id
     
@@ -61,7 +60,7 @@ def generate(
     for _ in range(max_tokens_to_generate):
         # print("\ncache length", kv_cache.get_seq_length())
         outputs = model(
-            input_ids, pixel_values, attention_mask, labels, token_type_ids, cache_position, kv_cache
+            input_ids, pixel_values, attention_mask, labels, token_type_ids, kv_cache
         )
         if kv_cache is not None: 
             kv_cache = outputs['kv_cache'] # updated kv-cache
@@ -85,8 +84,8 @@ def generate(
 
 if __name__ == '__main__':
     model_path = r"C:\Users\ADMIN\Downloads\paligemma_3b_pt_224_model_files"
-    prompt_l = ["Name the monument."]
-    image_path_l = [r"C:\Users\ADMIN\Downloads\Taj-Mahal-Agra-India.png"]
+    prompt_l = ["caption es"]
+    image_path_l = [r"C:\Users\ADMIN\Downloads\test.jpg"]
     max_tokens_to_generate=100 
     temperature=0.8
     top_p=0.9

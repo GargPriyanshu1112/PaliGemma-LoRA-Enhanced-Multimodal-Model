@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from typing import List
+from transformers import PreTrainedModel
 from modelling_gemma import GemmaConfig, GemmaForCausalLM
 from modelling_siglip import SiglipVisionConfig, SiglipVisionModel 
 
@@ -72,9 +73,9 @@ class PaliGemmaMultiModalProjector(nn.Module):
         
 
 # https://github.com/huggingface/transformers/blob/7f79a97399bb52aad8460e1da2f36577d5dccfed/src/transformers/models/paligemma/modeling_paligemma.py#L231
-class PaliGemmaForConditionalGeneration(nn.Module):
+class PaliGemmaForConditionalGeneration(PreTrainedModel):
     def __init__(self, config: PaliGemmaConfig):
-        super().__init__()
+        super().__init__(config)
         self.config = config
         self.vision_tower = SiglipVisionModel(config.vision_config)
         self.multi_modal_projector = PaliGemmaMultiModalProjector(config)
@@ -278,7 +279,7 @@ class PaliGemmaForConditionalGeneration(nn.Module):
                 shift_logits = shift_logits.contiguous()
                 shift_labels = shift_labels.contiguous()
 
-            flat_logits = shift_logits.view(-1, self.config.vocab_size)
+            flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
             flat_labels = shift_labels.view(-1).to(shift_logits.device)
             
             loss_fct = nn.CrossEntropyLoss()

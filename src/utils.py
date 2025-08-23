@@ -3,8 +3,8 @@ import json
 import torch
 from glob import glob
 from safetensors import safe_open
-from transformers import AutoTokenizer
-from modelling_paligemma import PaliGemmaConfig, PaliGemmaForConditionalGeneration
+from transformers import AutoTokenizer, PaliGemmaConfig
+from modelling_paligemma import PaliGemmaForConditionalGeneration
 
 def get_torch_device():
     return 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -21,9 +21,14 @@ def load_model(model_path, device=None, framework='pt'):
                 tensors[key] = f.get_tensor(key)
         print(f"Successfully loaded {os.path.basename(safetensors_file)}")
     
-    with open(os.path.join(model_path, 'config.json'), 'r') as f:
-        config_file = json.load(f)
-        config = PaliGemmaConfig(**config_file)
+    config = PaliGemmaConfig.from_pretrained(os.path.join(model_path, 'config.json'))
+    config.vision_config.hidden_size = 1152
+    config.vision_config.embed_dim = config.vision_config.hidden_size # for this specific custom siglip impl only 
+    # TODO
+    # with open(os.path.join(model_path, 'config.json'), 'r') as f:
+    #     config_file = json.load(f)
+    #     # config_file['vision_config']['embed_dim'] = config_file['vision_config']['hidden_size'] # for this specific custom siglip impl only 
+    #     config = PaliGemmaConfig(**config_file)
     
     model = PaliGemmaForConditionalGeneration(config)
     model.load_state_dict(tensors, strict=False)

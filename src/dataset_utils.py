@@ -69,9 +69,9 @@ def token2json(tokens, is_inner_value=False, added_vocab=None):
 
 
 class HFDatasetWrapper(Dataset):
-    def __init__(self, dataset_name_or_path, split='train'):
+    def __init__(self, dataset_name_or_path, split='train', num_proc=4):
         super().__init__()
-        self.dataset = load_dataset(dataset_name_or_path, split=split)
+        self.dataset = load_dataset(dataset_name_or_path, split=split, num_proc=num_proc)
     
     def process_ground_truth(self, ground_truth: str):
         gt = json.loads(ground_truth) # dict
