@@ -50,10 +50,11 @@ class LoraParameterization(nn.Module):
 
     @classmethod
     def add_lora_weights_to_linear(cls, layer, r=0, lora_alpha=32, lora_dropout_p=0.05):
+        device = layer.weight.device
         out_features, in_features = layer.weight.shape
         return cls(
             in_features, out_features, fan_in_fan_out=False, r=r, lora_alpha=lora_alpha, lora_dropout_p=lora_dropout_p
-        )
+        ).to(device) 
 
 
 base_lora_config = {
