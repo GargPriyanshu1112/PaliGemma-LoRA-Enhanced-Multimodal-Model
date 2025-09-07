@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from PIL import Image
+from transformers.processing_utils import ProcessorMixin
 
 def process_images(images, size, resample, rescale_factor, img_mean, img_std, dtype='float32'):
     imgs_arr = np.array([image.resize(size, resample=resample) for image in images], dtype=dtype)
@@ -13,15 +14,19 @@ def build_input_string(img_token, num_img_tokens, bos_token, prefix):
     return f"{img_token * num_img_tokens}{bos_token}{prefix}\n"
 
 # https://github.com/huggingface/transformers/blob/7f79a97399bb52aad8460e1da2f36577d5dccfed/src/transformers/models/paligemma/processing_paligemma.py#L76
-class PaliGemmaProcessor:
+class PaliGemmaProcessor(ProcessorMixin):
     IMG_PLACEHOLDER_TOKEN = "<image>"
     OBJ_DET_TOKENS = [f"<loc{idx:04d}>" for idx in range(1024)]
     OBJ_SEG_TOKENS = [f"<seg{idx:03d}>" for idx in range(128) ]
     IMAGENET_MEAN = [0.5, 0.5, 0.5] # one for each channel ; TODO: Sanity check values from paper
     IMAGENET_STD  = [0.5, 0.5, 0.5] # one for each channel ; TODO: Sanity check values from paper
+
+    # 👇 tells ProcessorMixin what to save & reload
+    attributes = ["tokenizer"]
+    tokenizer_class = ("PreTrainedTokenizerBase", None)
     
     def __init__(self, image_size, num_image_tokens, tokenizer):
-        super().__init__()
+        super().__init__(tokenizer=tokenizer)
         self.image_size = image_size # (h, w)
         self.image_seq_length = num_image_tokens
         # PaliGemma uses the Gemma tokenizer, which wasn't originally designed for multimodal input.
