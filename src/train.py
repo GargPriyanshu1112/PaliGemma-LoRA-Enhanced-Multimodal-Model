@@ -1,4 +1,5 @@
 import os
+import time
 import torch
 import wandb
 from functools import partial
@@ -23,11 +24,11 @@ os.environ["WANDB_API_KEY"] = _wandb_token
 wandb.login()
 
 # ---------------base dir----------------
-HOME = r"C:/Users/ADMIN/Downloads/paligemma_3b_pt_224_model_files"
+HOME = r"/home"
 # ---------------------------------------
 
 # ------------- hyperparams -------------
-NUM_EPOCHS = 10
+NUM_EPOCHS = 5
 IMAGE_SIZE = 224
 NUM_IMG_TOKENS = 256
 BATCH_SIZE = 2
@@ -56,7 +57,7 @@ PROMPT = "extract JSON."
 # ---------------------------------------
     
 if __name__ == '__main__':  
-    model_path = rf"{HOME}/paligemma_3b_pt_224_model_files"
+    model_path = rf"{HOME}/paligemma-3b-pt-224-model-files"
 
     device = get_torch_device()
     print(f"Device: {device}")
@@ -76,10 +77,8 @@ if __name__ == '__main__':
             ["q_proj", "o_proj", "out_proj", "k_proj", "v_proj", "gate_proj", "up_proj", "down_proj"],
             r=8
         )
-        # Move lora params to target device
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                param.data = param.data.to(device)
+        # Ensure all weights (base + LoRA) are on same device
+        model.to(device)
     else:
         # Freezing everything but the attention layers, layernorm and bias params
         for name, param in model.named_parameters():
@@ -136,7 +135,9 @@ if __name__ == '__main__':
     
     best_val_loss = float("inf")
     print("Training...")
+    total_start = time.time()  # start total training timer
     for epoch in range(NUM_EPOCHS):
+        epoch_start = time.time()  # start epoch timer
         model.train()
         train_loss_epoch = 0
         for idx, train_batch in enumerate(train_dataloader):
@@ -188,15 +189,22 @@ if __name__ == '__main__':
         avg_train_loss = train_loss_epoch / len(train_dataloader)
         avg_val_loss = val_loss_epoch / len(val_dataloader)
 
+        epoch_end = time.time()
+        epoch_time = epoch_end - epoch_start
+
         for param_group in optimizer.param_groups:
-            print(f"Epoch {epoch+1} | Avg Train Loss: {avg_train_loss:.4f} | Avg Val Loss: {avg_val_loss:.4f} Learning Rate: {param_group['lr']:.4f}\n")
+            print(f"Epoch {epoch+1} | Avg Train Loss: {avg_train_loss:.4f} | "
+                  f"Avg Val Loss: {avg_val_loss:.4f} | "
+                  f"Learning Rate: {param_group['lr']:.4f} | "
+                  f"Epoch Time: {epoch_time/60:.2f} min\n")
         
         # Log epoch-level metrics
         wandb.log({
             "epoch": epoch + 1,
             "train_loss": avg_train_loss,
             "val_loss": avg_val_loss,
-            "learning_rate": optimizer.param_groups[0]['lr']
+            "learning_rate": optimizer.param_groups[0]['lr'],
+            "epoch_time_min": round(epoch_time / 60, 2)
         })
 
         # Save best model locally based on validation loss
@@ -208,6 +216,14 @@ if __name__ == '__main__':
             state_dict = model.state_dict()
             filtered = {k: v for k, v in state_dict.items() if not k.endswith("lm_head.weight")}
             model.save_pretrained(output_dir, state_dict=filtered)
+            # Save tokenizer
+            tokenizer.save_pretrained(output_dir)
+            # Save processor
+            processor.save_pretrained(output_dir)
+    
+    total_end = time.time()
+    total_time = total_end - total_start
+    print(f"\nTotal training time: {total_time/60:.2f} minutes.")
     
     artifact = wandb.Artifact("paligemma_best_model", type="model")
     artifact.add_dir(output_dir)
