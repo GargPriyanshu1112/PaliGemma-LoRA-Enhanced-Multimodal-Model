@@ -1,15 +1,20 @@
+import re
 import os
 import time
 import torch
 import wandb
+import random
 from functools import partial
 from dotenv import load_dotenv
 from torch.utils.data import DataLoader
 from huggingface_hub import HfApi
 from huggingface_hub import create_repo
+from nltk.metrics.distance import edit_distance
 
 from utils import get_torch_device, load_model, load_tokenizer, move_to_device
 from dataset_utils import HFDatasetWrapper, train_collate_fn
+from generation_utils import _sample_top_p
+from modelling_paligemma import KVCache
 from processing_paligemma import PaliGemmaProcessor
 from lora import attach_lora_to_layers
 
@@ -28,7 +33,7 @@ HOME = r"/home"
 # ---------------------------------------
 
 # ------------- hyperparams -------------
-NUM_EPOCHS = 5
+NUM_EPOCHS = 3
 IMAGE_SIZE = 224
 NUM_IMG_TOKENS = 256
 BATCH_SIZE = 2
@@ -38,6 +43,7 @@ MAX_GRAD_NORM = 1.0
 NUM_PROC = 4
 NUM_WORKERS = 4
 GRAD_ACCUMULATION_STEPS = 4
+MAX_LENGTH = 1024
 USE_LORA = False
 # ---------------------------------------
 
@@ -55,7 +61,79 @@ os.makedirs(output_dir, exist_ok=True)
 # --------------input prompt-------------
 PROMPT = "extract JSON."
 # ---------------------------------------
+
+@torch.inference_mode()
+def generate_batched(
+    model,
+    processor,
+    pixel_values,
+    input_ids,
+    attention_mask,
+    max_tokens_to_generate,
+    temperature,
+    top_p,
+    do_sample,
+    device=None
+):
+    """
+    Generates text for a batch of processed inputs.
+    """
+    if not device:
+        device = get_torch_device()
+
+    model.eval()
     
+    pixel_values = move_to_device(pixel_values, device)
+    input_ids = move_to_device(input_ids, device)
+    attention_mask = move_to_device(attention_mask, device)
+    
+    labels = None
+    token_type_ids = None
+    kv_cache = KVCache()
+    stop_token = processor.tokenizer.eos_token_id
+    
+    # Keep track of which sequences in the batch are still being generated
+    batch_size = input_ids.shape[0]
+    unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=device)
+    
+    generated_tokens = []    
+
+    for _ in range(max_tokens_to_generate):
+        outputs = model(
+            input_ids, pixel_values, attention_mask, labels, token_type_ids, kv_cache
+        )
+        if kv_cache is not None:
+            kv_cache = outputs['kv_cache'] # updated kv-cache
+        next_token_logits = outputs['logits'][:, -1, :]
+        # Sample the next token
+        if do_sample: # use sampling to get next token instead of the greedy strategy
+            next_token_logits = torch.softmax(next_token_logits / temperature, dim=-1) # use temperature
+            next_token = _sample_top_p(next_token_logits, top_p) # use top_p sampling
+        else:
+            next_token = torch.argmax(next_token_logits, dim=-1).unsqueeze(-1)
+        # If a sequence is finished, replace its next token with the pad token. For an unfinished
+        # sequence, unfinished_sequences is 1. The formula becomes next_token * 1 + pad_token_id * 0,
+        # which simplifies to just next_token. The newly generated token is kept. For a finished
+        # sequence, unfinished_sequences is 0. The formula becomes next_token * 0 + pad_token_id * 1, 
+        # which simplifies to pad_token_id. The generated token is replaced with the padding token.
+        next_token = next_token * unfinished_sequences.unsqueeze(-1) + processor.tokenizer.pad_token_id * (1 - unfinished_sequences.unsqueeze(-1))
+
+        generated_tokens.append(next_token)
+        
+        # Update input_ids for the next iteration
+        input_ids = next_token
+                
+        # Update unfinished_sequences
+        unfinished_sequences = unfinished_sequences & (next_token != stop_token).long().squeeze()
+
+        if unfinished_sequences.max() == 0: # if all sequences have finished, stop generation
+            break
+
+    generated_tokens = torch.cat(generated_tokens, dim=1)
+    decoded_seqs = processor.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+    return decoded_seqs
+
+
 if __name__ == '__main__':  
     model_path = rf"{HOME}/paligemma-3b-pt-224-model-files"
 
@@ -192,6 +270,50 @@ if __name__ == '__main__':
         epoch_end = time.time()
         epoch_time = epoch_end - epoch_start
 
+        # Run generation on one random validation batch
+        val_iter = iter(val_dataloader)
+        rand_idx = random.randint(0, len(val_dataloader)-1)
+        for _ in range(rand_idx):
+            batch = next(val_iter)
+
+        batch = move_to_device(batch, device)
+        answers = batch["labels"]
+
+        predictions = generate_batched(
+            model=model,
+            processor=processor,
+            pixel_values=batch["pixel_values"],
+            input_ids=batch["input_ids"],
+            attention_mask=batch["attention_mask"],
+            max_tokens_to_generate=MAX_LENGTH,
+            temperature=1.0, # greedy decoding
+            top_p=1.0, # top_p=1.0 disables top-p sampling
+            do_sample=False, # greedy
+            device=device
+        )
+
+        # Compute normalized edit distance
+        scores = []
+        for pred, answer in zip(predictions, answers):
+            # decode answer if it's a tensor
+            # if torch.is_tensor(answer):
+            #     answer = processor.tokenizer.decode(answer, skip_special_tokens=True)
+            if torch.is_tensor(answer):
+                answer_ids = answer.tolist()
+                # keep only valid IDs
+                answer_ids = [tid for tid in answer_ids if 0 <= tid < processor.tokenizer.vocab_size]
+                answer = processor.tokenizer.decode(answer_ids, skip_special_tokens=True)
+            pred = re.sub(r"(?:(?<=>) | (?=</s_))", "", pred)
+            # scores.append(edit_distance(pred, answer) / max(len(pred), len(answer)))
+            # avoid division by zero
+            denom = max(len(pred), len(answer), 1)
+            scores.append(edit_distance(pred, answer) / denom)
+            print(f"    Answer: {answer}")
+            print(f"Prediction: {pred}")
+
+        avg_edit_distance = sum(scores) / len(scores)
+        print(f"[Validation Generation] Avg NormED (random batch): {avg_edit_distance:.4f}")
+
         for param_group in optimizer.param_groups:
             print(f"Epoch {epoch+1} | Avg Train Loss: {avg_train_loss:.4f} | "
                   f"Avg Val Loss: {avg_val_loss:.4f} | "
@@ -225,9 +347,9 @@ if __name__ == '__main__':
     total_time = total_end - total_start
     print(f"\nTotal training time: {total_time/60:.2f} minutes.")
     
-    artifact = wandb.Artifact("paligemma_best_model", type="model")
-    artifact.add_dir(output_dir)
-    wandb.log_artifact(artifact)
+    # artifact = wandb.Artifact("paligemma_best_model", type="model")
+    # artifact.add_dir(output_dir)
+    # wandb.log_artifact(artifact)
     wandb.finish()
 
     print("\nTraining finished. Pushing the best model to the Hugging Face Hub.")
