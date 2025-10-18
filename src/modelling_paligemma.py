@@ -2,28 +2,8 @@ import torch
 from torch import nn
 from typing import List
 from transformers import PreTrainedModel
-from modelling_gemma import GemmaConfig, GemmaForCausalLM
-from modelling_siglip import SiglipVisionConfig, SiglipVisionModel 
-
-class PaliGemmaConfig():
-    def __init__(
-        self,
-        vision_config=None,
-        text_config=None,
-        ignore_index=-100, 
-        pad_token_id=0,
-        image_token_index=256000,
-        vocab_size=257152,
-        projection_dim=2048,
-        **kwargs,
-    ):
-        self.vision_config = SiglipVisionConfig(**vision_config)
-        self.text_config = GemmaConfig(**text_config, pad_token_id=pad_token_id)
-        self.ignore_index = ignore_index
-        self.pad_token_id = pad_token_id
-        self.image_token_index = image_token_index
-        self.vocab_size = self.text_config.vocab_size
-        self.projection_dim = projection_dim
+from modelling_gemma import GemmaForCausalLM
+from modelling_siglip import SiglipVisionModel 
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -64,7 +44,7 @@ class KVCache:
    
 
 class PaliGemmaMultiModalProjector(nn.Module):
-    def __init__(self, config: PaliGemmaConfig):
+    def __init__(self, config):
         super().__init__()
         self.linear = nn.Linear(config.vision_config.embed_dim, config.projection_dim, bias=True)
     
@@ -74,7 +54,7 @@ class PaliGemmaMultiModalProjector(nn.Module):
 
 # https://github.com/huggingface/transformers/blob/7f79a97399bb52aad8460e1da2f36577d5dccfed/src/transformers/models/paligemma/modeling_paligemma.py#L231
 class PaliGemmaForConditionalGeneration(PreTrainedModel):
-    def __init__(self, config: PaliGemmaConfig):
+    def __init__(self, config):
         super().__init__(config)
         self.config = config
         self.vision_tower = SiglipVisionModel(config.vision_config)
@@ -171,7 +151,7 @@ class PaliGemmaForConditionalGeneration(PreTrainedModel):
             final_labels = torch.full(
                 (batch_size, seq_len), self.config.ignore_index, dtype=input_ids.dtype, device=input_ids.device
             )
-            final_labels = torch.where(input_ids != self.pad_token_id, labels, final_labels) # (b, seq_len) ; ignore_index at places of pad token
+            final_labels = torch.where(txt_mask, labels, final_labels) # (b, seq_len) ; ignore_index at places of pad token
         else: # if pre-filling stage of inference
             # Create a mask that ensures attention is only computed between valid (non-pad) tokens      
             causal_mask = attention_mask.unsqueeze(1).unsqueeze(2) * attention_mask.unsqueeze(1).unsqueeze(-1) # [b, 1, seq_len, seq_len] ; 1*1=1 for two real tokens; anything with a pad yields 0.

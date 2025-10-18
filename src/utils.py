@@ -21,14 +21,12 @@ def load_model(model_path, device=None, framework='pt'):
                 tensors[key] = f.get_tensor(key)
         print(f"Successfully loaded {os.path.basename(safetensors_file)}")
     
-    config = PaliGemmaConfig.from_pretrained(os.path.join(model_path, 'config.json'))
+    config_path = os.path.join(model_path, "config.json")
+    if not os.path.exists(config_path):
+        config_path = "config.json"
+    config = PaliGemmaConfig.from_pretrained(config_path)
     config.vision_config.hidden_size = 1152
     config.vision_config.embed_dim = config.vision_config.hidden_size # for this specific custom siglip impl only 
-    # TODO
-    # with open(os.path.join(model_path, 'config.json'), 'r') as f:
-    #     config_file = json.load(f)
-    #     # config_file['vision_config']['embed_dim'] = config_file['vision_config']['hidden_size'] # for this specific custom siglip impl only 
-    #     config = PaliGemmaConfig(**config_file)
     
     model = PaliGemmaForConditionalGeneration(config)
     model.load_state_dict(tensors, strict=False)

@@ -4,21 +4,34 @@ import random
 from datasets import load_dataset
 from torch.utils.data import Dataset
 
-def json2token(obj: dict | str):
-    if isinstance(obj, dict):
-        output = ''
-        for k, v in obj.items():
-            output += (fr"<s_{k}>" + json2token(v) + fr"</s_{k}>")
-        return output
-    elif isinstance(obj, list):
-        return r"<sep/>".join([json2token(item) for item in obj])
+def json2token(obj, sort_json_key=True):
+    if type(obj) == dict:
+        if len(obj) == 1 and "text_sequence" in obj:
+            return obj["text_sequence"]
+        else:
+            output = ""
+            if sort_json_key:
+                keys = sorted(obj.keys(), reverse=True)
+            else:
+                keys = obj.keys()
+            for k in keys:
+                output += (
+                    fr"<s_{k}>"
+                    + json2token(obj[k], sort_json_key)
+                    + fr"</s_{k}>"
+                )
+            return output
+    elif type(obj) == list:
+        return r"<sep/>".join(
+            [json2token(item, sort_json_key) for item in obj]
+        )
     else:
+        obj = str(obj)
         return obj
 
-# TODO: Refactor
-def token2json(tokens, is_inner_value=False, added_vocab=None):
+def token2json(tokens, processor, is_inner_value=False, added_vocab=None):
     if added_vocab is None:
-        added_vocab = {}
+        added_vocab = processor.tokenizer.get_added_vocab()
 
     output = {}
 
@@ -43,7 +56,7 @@ def token2json(tokens, is_inner_value=False, added_vocab=None):
             if content is not None:
                 content = content.group(1).strip()
                 if r"<s_" in content and r"</s_" in content:  # non-leaf node
-                    value = token2json(content, is_inner_value=True, added_vocab=added_vocab)
+                    value = token2json(content, processor, is_inner_value=True, added_vocab=added_vocab)
                     if value:
                         if len(value) == 1:
                             value = value[0]
@@ -60,7 +73,7 @@ def token2json(tokens, is_inner_value=False, added_vocab=None):
 
             tokens = tokens[tokens.find(end_token) + len(end_token) :].strip()
             if tokens[:6] == r"<sep/>":  # non-leaf nodes
-                return [output] + token2json(tokens[6:], is_inner_value=True, added_vocab=added_vocab)
+                return [output] + token2json(tokens[6:], processor, is_inner_value=True, added_vocab=added_vocab)
 
     if len(output):
         return [output] if is_inner_value else output
@@ -96,29 +109,32 @@ class HFDatasetWrapper(Dataset):
 
 def train_collate_fn(samples, processor, prompt, padding='longest', max_length=None, truncation=False):
     images  = [sample[0].convert('RGB') for sample in samples] 
-    prefix = [prompt for _ in samples]
+    prefix = ['<image> ' + prompt for _ in samples]
     suffix = [sample[1] for sample in samples]
      
     inputs = processor(
         images=images, 
-        texts=prefix, 
+        text=prefix, 
         suffix=suffix,
         padding=padding,
         max_length=max_length,
         truncation=truncation,
+        return_tensors='pt'
     )
     return inputs
 
 def eval_collate_fn(samples, processor, prompt, padding='longest', max_length=None, truncation=False):
     images = [sample[0].convert('RGB') for sample in samples] 
-    prefix = [prompt for _ in samples]
+    prefix = ['<image> ' + prompt for _ in samples]
     outputs = [sample[1] for sample in samples]
      
     inputs = processor(
         images=images, 
-        texts=prefix,
+        text=prefix,
+        suffix=outputs,
         padding=padding,
         max_length=max_length,
         truncation=truncation,
+        return_tensors='pt'
     )
-    return inputs, outputs
+    return inputs

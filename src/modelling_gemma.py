@@ -3,39 +3,6 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-class GemmaConfig():
-    def __init__(
-        self,
-        vocab_size,
-        hidden_size,
-        intermediate_size,
-        num_hidden_layers,
-        num_attention_heads,
-        num_key_value_heads,
-        head_dim=256,
-        max_position_embeddings=8192,
-        rms_norm_eps=1e-6,
-        rope_theta=10000.0,
-        attention_bias=False,
-        attention_dropout=0.0,
-        pad_token_id=0,
-        **kwargs
-    ):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
-        self.num_hidden_layers = num_hidden_layers
-        self.num_attention_heads = num_attention_heads
-        self.num_key_value_heads = num_key_value_heads
-        self.head_dim = head_dim
-        self.max_position_embeddings = max_position_embeddings
-        self.rms_norm_eps = rms_norm_eps
-        self.rope_theta = rope_theta
-        self.attention_bias = attention_bias
-        self.attention_dropout = attention_dropout
-        self.pad_token_id = pad_token_id
-
 
 class GemmaRotaryEmbedding(nn.Module):
     def __init__(self, head_dim, max_position_embeddings=2048, base=10_000):
@@ -102,7 +69,7 @@ def repeat_kv(x, n_rep):
 
    
 class GemmaMLP(nn.Module):
-    def __init__(self, config: GemmaConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
@@ -116,7 +83,7 @@ class GemmaMLP(nn.Module):
 # TODO: 3:38:00 KV cache + GQA.
 # https://github.com/huggingface/transformers/blob/v4.53.2/src/transformers/models/gemma/modeling_gemma.py#L191
 class GemmaAttention(nn.Module):
-    def __init__(self, config: GemmaConfig, layer_idx: int):
+    def __init__(self, config, layer_idx: int):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx # maps each decoder layer to its dedicated KV-cache instance
@@ -177,7 +144,7 @@ class GemmaAttention(nn.Module):
               
 
 class GemmaDecoderLayer(nn.Module):
-    def __init__(self, config: GemmaConfig, layer_idx):
+    def __init__(self, config, layer_idx):
         super().__init__()
         self.config = config
         self.input_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -216,20 +183,8 @@ class GemmaRMSNorm(nn.Module):
         return output.type_as(x)
 
 
- # --------------------------------------------------------------------------------------------------------------------------------------- # 
-def _preprocess_mask_arguments(input_embeds, attention_mask, kv_cache, cache_position, layer_idx):
-    if attention_mask is not None and attention_mask.ndim == 2:
-        attention_mask = attention_mask.to(device=cache_position.device, dtype=torch.bool)
-    if kv_cache is not None:
-        kv_length, kv_offset = kv_cache.get_mask_sizes(cache_position, layer_idx)
-    else:
-        kv_length, kv_offset = input_embeds.shape[1], 0
-    return False, attention_mask, kv_length, kv_offset
- # --------------------------------------------------------------------------------------------------------------------------------------- #
-
-
 class GemmaModel(nn.Module):
-    def __init__(self, config: GemmaConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.embed_tokens = nn.Embedding(
@@ -261,7 +216,7 @@ class GemmaModel(nn.Module):
 
 # https://github.com/huggingface/transformers/blob/v4.53.2/src/transformers/models/gemma/modeling_gemma.py#L476
 class GemmaForCausalLM(nn.Module):
-    def __init__(self, config: GemmaConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.model = GemmaModel(config)

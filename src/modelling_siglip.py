@@ -4,38 +4,11 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-class SiglipVisionConfig:
-    def __init__(
-        self,
-        num_channels=3,
-        image_size=224,
-        patch_size=16,
-        embed_dim=768, 
-        num_attention_heads=12,
-        num_hidden_layers=12, 
-        attention_dropout=0.0,
-        layer_norm_eps=1e-6,  
-        intermediate_size=3072,
-        num_image_tokens=None,
-        **kwargs
-    ):
-        super().__init__()
-        self.num_channels = num_channels
-        self.image_size = image_size
-        self.patch_size = patch_size
-        self.embed_dim = embed_dim
-        self.num_attention_heads = num_attention_heads
-        self.num_hidden_layers = num_hidden_layers 
-        self.attention_dropout = attention_dropout
-        self.layer_norm_eps = layer_norm_eps
-        self.intermediate_size = intermediate_size
-        self.num_image_tokens = num_image_tokens
-
 
 # Adds more params in the model giving it more representational power.
 # Adds non-linearity, allowing the model to model complex transformations.
 class SiglipMLP(nn.Module):
-    def __init__(self, config: SiglipVisionConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.fc1 = nn.Linear(config.embed_dim, config.intermediate_size)
@@ -49,7 +22,7 @@ class SiglipMLP(nn.Module):
     
 
 class SiglipAttention(nn.Module):
-    def __init__(self, config: SiglipVisionConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.num_heads = config.num_attention_heads
@@ -86,7 +59,7 @@ class SiglipAttention(nn.Module):
 
 
 class SiglipEncoderLayer(nn.Module):
-    def __init__(self, config: SiglipVisionConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.embed_dim = config.embed_dim
@@ -108,7 +81,7 @@ class SiglipEncoderLayer(nn.Module):
 
 
 class SiglipEncoder(nn.Module):
-    def __init__(self, config: SiglipVisionConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.layers = nn.ModuleList(
@@ -123,7 +96,7 @@ class SiglipEncoder(nn.Module):
     
 
 class SiglipVisionEmbeddings(nn.Module):
-    def __init__(self, config: SiglipVisionConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.patch_embedding = nn.Conv2d(
@@ -155,7 +128,7 @@ class SiglipVisionEmbeddings(nn.Module):
     
 
 class SiglipVisionTransformer(nn.Module):
-    def __init__(self, config: SiglipVisionConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.embeddings = SiglipVisionEmbeddings(config)
@@ -170,7 +143,7 @@ class SiglipVisionTransformer(nn.Module):
     
 
 class SiglipVisionModel(nn.Module):
-    def __init__(self, config: SiglipVisionConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.vision_model = SiglipVisionTransformer(config)

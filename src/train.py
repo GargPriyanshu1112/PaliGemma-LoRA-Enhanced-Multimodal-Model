@@ -10,12 +10,11 @@ from torch.utils.data import DataLoader
 from huggingface_hub import HfApi
 from huggingface_hub import create_repo
 from nltk.metrics.distance import edit_distance
+from transformers import AutoProcessor
 
-from utils import get_torch_device, load_model, load_tokenizer, move_to_device
+from utils import get_torch_device, load_model
 from dataset_utils import HFDatasetWrapper, train_collate_fn
-from generation_utils import _sample_top_p
-from modelling_paligemma import KVCache
-from processing_paligemma import PaliGemmaProcessor
+from generation_utils import generate
 from lora import attach_lora_to_layers
 
 load_dotenv()
@@ -33,7 +32,7 @@ HOME = r"/home"
 # ---------------------------------------
 
 # ------------- hyperparams -------------
-NUM_EPOCHS = 3
+NUM_EPOCHS = 10
 IMAGE_SIZE = 224
 NUM_IMG_TOKENS = 256
 BATCH_SIZE = 2
@@ -43,12 +42,14 @@ MAX_GRAD_NORM = 1.0
 NUM_PROC = 4
 NUM_WORKERS = 4
 GRAD_ACCUMULATION_STEPS = 4
+ENABLE_AUTOCAST = False
 MAX_LENGTH = 1024
 USE_LORA = False
 # ---------------------------------------
 
 # --------------hf hub setup-------------
 HF_DATASET_ID = "naver-clova-ix/cord-v2"
+PALIGEMMA_PROCESSOR_ID = "google/paligemma-3b-pt-224"
 FINETUNED_MODEL_ID = "PriyHF/paligemma-3b-pt-224-finetuned"
 create_repo(FINETUNED_MODEL_ID, exist_ok=True, token=_hf_token)
 # ---------------------------------------
@@ -62,87 +63,16 @@ os.makedirs(output_dir, exist_ok=True)
 PROMPT = "extract JSON."
 # ---------------------------------------
 
-@torch.inference_mode()
-def generate_batched(
-    model,
-    processor,
-    pixel_values,
-    input_ids,
-    attention_mask,
-    max_tokens_to_generate,
-    temperature,
-    top_p,
-    do_sample,
-    device=None
-):
-    """
-    Generates text for a batch of processed inputs.
-    """
-    if not device:
-        device = get_torch_device()
-
-    model.eval()
-    
-    pixel_values = move_to_device(pixel_values, device)
-    input_ids = move_to_device(input_ids, device)
-    attention_mask = move_to_device(attention_mask, device)
-    
-    labels = None
-    token_type_ids = None
-    kv_cache = KVCache()
-    stop_token = processor.tokenizer.eos_token_id
-    
-    # Keep track of which sequences in the batch are still being generated
-    batch_size = input_ids.shape[0]
-    unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=device)
-    
-    generated_tokens = []    
-
-    for _ in range(max_tokens_to_generate):
-        outputs = model(
-            input_ids, pixel_values, attention_mask, labels, token_type_ids, kv_cache
-        )
-        if kv_cache is not None:
-            kv_cache = outputs['kv_cache'] # updated kv-cache
-        next_token_logits = outputs['logits'][:, -1, :]
-        # Sample the next token
-        if do_sample: # use sampling to get next token instead of the greedy strategy
-            next_token_logits = torch.softmax(next_token_logits / temperature, dim=-1) # use temperature
-            next_token = _sample_top_p(next_token_logits, top_p) # use top_p sampling
-        else:
-            next_token = torch.argmax(next_token_logits, dim=-1).unsqueeze(-1)
-        # If a sequence is finished, replace its next token with the pad token. For an unfinished
-        # sequence, unfinished_sequences is 1. The formula becomes next_token * 1 + pad_token_id * 0,
-        # which simplifies to just next_token. The newly generated token is kept. For a finished
-        # sequence, unfinished_sequences is 0. The formula becomes next_token * 0 + pad_token_id * 1, 
-        # which simplifies to pad_token_id. The generated token is replaced with the padding token.
-        next_token = next_token * unfinished_sequences.unsqueeze(-1) + processor.tokenizer.pad_token_id * (1 - unfinished_sequences.unsqueeze(-1))
-
-        generated_tokens.append(next_token)
-        
-        # Update input_ids for the next iteration
-        input_ids = next_token
-                
-        # Update unfinished_sequences
-        unfinished_sequences = unfinished_sequences & (next_token != stop_token).long().squeeze()
-
-        if unfinished_sequences.max() == 0: # if all sequences have finished, stop generation
-            break
-
-    generated_tokens = torch.cat(generated_tokens, dim=1)
-    decoded_seqs = processor.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-    return decoded_seqs
-
 
 if __name__ == '__main__':  
     model_path = rf"{HOME}/paligemma-3b-pt-224-model-files"
 
     device = get_torch_device()
     print(f"Device: {device}")
-    
-    print("Loading tokenizer...")
-    tokenizer = load_tokenizer(model_path)
 
+    print("Loading processor...")
+    processor = AutoProcessor.from_pretrained(PALIGEMMA_PROCESSOR_ID)
+    
     print("Loading model...")
     model = load_model(model_path, device, 'pt')
     if USE_LORA:
@@ -158,15 +88,11 @@ if __name__ == '__main__':
         # Ensure all weights (base + LoRA) are on same device
         model.to(device)
     else:
-        # Freezing everything but the attention layers, layernorm and bias params
         for name, param in model.named_parameters():
-            if "attn" in name or "norm" in name or "bias" in name:
+            if "attn" in name or "norm" in name or "bias" in name or "lm_head" in name:
                 param.requires_grad = True
             else:
                 param.requires_grad = False
-
-    print("Loading processor...")
-    processor = PaliGemmaProcessor(IMAGE_SIZE, NUM_IMG_TOKENS, tokenizer)
     
     print("Loading datasets...")
     train_dataset = HFDatasetWrapper(HF_DATASET_ID, 'train', num_proc=NUM_PROC)
@@ -219,8 +145,8 @@ if __name__ == '__main__':
         model.train()
         train_loss_epoch = 0
         for idx, train_batch in enumerate(train_dataloader):
-            train_batch = move_to_device(train_batch, device)
-            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            train_batch = {k: v.to(device) for k, v in train_batch.items()} 
+            with torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=ENABLE_AUTOCAST):
                 train_outputs = model(
                     input_ids=train_batch["input_ids"], 
                     pixel_values=train_batch["pixel_values"], 
@@ -250,8 +176,8 @@ if __name__ == '__main__':
         val_loss_epoch = 0
         with torch.no_grad():
             for val_batch in val_dataloader:
-                val_batch = move_to_device(val_batch, device)          
-                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                val_batch = {k: v.to(device) for k, v in val_batch.items()}           
+                with torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=ENABLE_AUTOCAST):
                     val_outputs = model(
                         input_ids=val_batch["input_ids"],
                         pixel_values=val_batch["pixel_values"],
@@ -276,36 +202,28 @@ if __name__ == '__main__':
         for _ in range(rand_idx):
             batch = next(val_iter)
 
-        batch = move_to_device(batch, device)
+        batch = {k: v.to(device) for k, v in batch.items()}
         answers = batch["labels"]
 
-        predictions = generate_batched(
+        predictions = generate(
             model=model,
             processor=processor,
             pixel_values=batch["pixel_values"],
             input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
             max_tokens_to_generate=MAX_LENGTH,
-            temperature=1.0, # greedy decoding
-            top_p=1.0, # top_p=1.0 disables top-p sampling
-            do_sample=False, # greedy
-            device=device
+            device=device,
         )
 
         # Compute normalized edit distance
         scores = []
         for pred, answer in zip(predictions, answers):
-            # decode answer if it's a tensor
-            # if torch.is_tensor(answer):
-            #     answer = processor.tokenizer.decode(answer, skip_special_tokens=True)
             if torch.is_tensor(answer):
                 answer_ids = answer.tolist()
                 # keep only valid IDs
                 answer_ids = [tid for tid in answer_ids if 0 <= tid < processor.tokenizer.vocab_size]
                 answer = processor.tokenizer.decode(answer_ids, skip_special_tokens=True)
             pred = re.sub(r"(?:(?<=>) | (?=</s_))", "", pred)
-            # scores.append(edit_distance(pred, answer) / max(len(pred), len(answer)))
-            # avoid division by zero
             denom = max(len(pred), len(answer), 1)
             scores.append(edit_distance(pred, answer) / denom)
             print(f"    Answer: {answer}")
@@ -337,19 +255,14 @@ if __name__ == '__main__':
             # Workaround to prevent weight tying error (https://github.com/kazuar/Phi3-Vision-ft/issues/2)
             state_dict = model.state_dict()
             filtered = {k: v for k, v in state_dict.items() if not k.endswith("lm_head.weight")}
+            # Save model and processor
             model.save_pretrained(output_dir, state_dict=filtered)
-            # Save tokenizer
-            tokenizer.save_pretrained(output_dir)
-            # Save processor
-            processor.save_pretrained(output_dir)
+            processor.save_pretrained(output_dir) 
     
     total_end = time.time()
     total_time = total_end - total_start
     print(f"\nTotal training time: {total_time/60:.2f} minutes.")
     
-    # artifact = wandb.Artifact("paligemma_best_model", type="model")
-    # artifact.add_dir(output_dir)
-    # wandb.log_artifact(artifact)
     wandb.finish()
 
     print("\nTraining finished. Pushing the best model to the Hugging Face Hub.")
