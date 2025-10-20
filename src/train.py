@@ -198,7 +198,7 @@ if __name__ == '__main__':
 
         # Run generation on one random validation batch
         val_iter = iter(val_dataloader)
-        rand_idx = random.randint(0, len(val_dataloader)-1)
+        rand_idx = random.randint(1, len(val_dataloader)-1)
         for _ in range(rand_idx):
             batch = next(val_iter)
 

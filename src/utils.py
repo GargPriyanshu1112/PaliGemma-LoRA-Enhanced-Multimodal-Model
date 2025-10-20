@@ -21,10 +21,7 @@ def load_model(model_path, device=None, framework='pt'):
                 tensors[key] = f.get_tensor(key)
         print(f"Successfully loaded {os.path.basename(safetensors_file)}")
     
-    config_path = os.path.join(model_path, "config.json")
-    if not os.path.exists(config_path):
-        config_path = "config.json"
-    config = PaliGemmaConfig.from_pretrained(config_path)
+    config = PaliGemmaConfig.from_pretrained(model_path)
     config.vision_config.hidden_size = 1152
     config.vision_config.embed_dim = config.vision_config.hidden_size # for this specific custom siglip impl only 
     
