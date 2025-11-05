@@ -15,7 +15,7 @@ from transformers import AutoProcessor
 from utils import get_torch_device, load_model
 from dataset_utils import HFDatasetWrapper, train_collate_fn
 from generation_utils import generate
-from lora import attach_lora_to_layers
+from lora import attach_lora_weights, merge_and_unwrap_lora
 
 load_dotenv()
 _hf_token = os.getenv("HF_TOKEN")
@@ -80,7 +80,7 @@ if __name__ == '__main__':
         for param in model.parameters():
             param.requires_grad = False
         # Attach lora params
-        attach_lora_to_layers(
+        attach_lora_weights(
             model, 
             ["q_proj", "o_proj", "out_proj", "k_proj", "v_proj", "gate_proj", "up_proj", "down_proj"],
             r=8
@@ -252,6 +252,13 @@ if __name__ == '__main__':
             best_val_loss = avg_val_loss
             print(f"New best model found with validation loss: {best_val_loss:.4f}")
             print(f"Saving model to {output_dir}")
+
+            if USE_LORA:
+                adapter_state = {
+                    k: v.detach().cpu() for k, v in model.state_dict().items() if "lora_" in k
+                }
+                torch.save(adapter_state, os.path.join(output_dir, "lora_adapter.pt"))
+
             # Workaround to prevent weight tying error (https://github.com/kazuar/Phi3-Vision-ft/issues/2)
             state_dict = model.state_dict()
             filtered = {k: v for k, v in state_dict.items() if not k.endswith("lm_head.weight")}
@@ -264,6 +271,18 @@ if __name__ == '__main__':
     print(f"\nTotal training time: {total_time/60:.2f} minutes.")
     
     wandb.finish()
+
+    # TODO: Hack; needs refactoring
+    if USE_LORA:
+        print("\nMerging LoRA and saving final model...")
+        model = merge_and_unwrap_lora(model)
+        model.to("cpu")
+        # Workaround to prevent weight tying error (https://github.com/kazuar/Phi3-Vision-ft/issues/2)
+        state_dict = model.state_dict()
+        filtered = {k: v for k, v in state_dict.items() if not k.endswith("lm_head.weight")}
+        # Save model and processor
+        model.save_pretrained(output_dir, state_dict=filtered)
+        processor.save_pretrained(output_dir) 
 
     print("\nTraining finished. Pushing the best model to the Hugging Face Hub.")
     api = HfApi()
