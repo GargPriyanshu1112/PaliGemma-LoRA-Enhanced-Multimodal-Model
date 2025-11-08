@@ -1,0 +1,12 @@
+torch
+numpy
+pillow
+matplotlib
+transformers
+datasets
+huggingface_hub
+torchvision
+dotenv
+nltk
+hf_xet
+wandb
