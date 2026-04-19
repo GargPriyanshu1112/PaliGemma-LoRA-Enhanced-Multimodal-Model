@@ -95,7 +95,7 @@
 <td align="center" valign="top">
   <img src="assets/test_img2.jpg" width="250"/>
 </td>
-<td valign="middle"><pre>
+<td valign="top"><pre>
 {
   "total": {
     "total_price": "54,000",
@@ -126,7 +126,7 @@
   ]
 }
 </pre></td>
-<td valign="middle"><pre>
+<td valign="top"><pre>
 {
   "total": {
     "total_price": "54,000",
