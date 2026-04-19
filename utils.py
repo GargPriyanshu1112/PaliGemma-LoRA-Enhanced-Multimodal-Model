@@ -12,7 +12,7 @@ def get_torch_device():
 def load_model(model_path, device=None, framework='pt'):
     if not device:
         device = get_torch_device()
-    
+
     safetensors_file_l = glob(os.path.join(model_path, '*.safetensors'))
     tensors = {}
     for safetensors_file in safetensors_file_l:
@@ -20,11 +20,12 @@ def load_model(model_path, device=None, framework='pt'):
             for key in f.keys():
                 tensors[key] = f.get_tensor(key)
         print(f"Successfully loaded {os.path.basename(safetensors_file)}")
-    
+
     config = PaliGemmaConfig.from_pretrained(model_path)
     config.vision_config.hidden_size = 1152
-    config.vision_config.embed_dim = config.vision_config.hidden_size # for this specific custom siglip impl only 
-    
+    config.vision_config.embed_dim = config.vision_config.hidden_size # for this specific custom siglip impl only
+    config.text_config.rope_theta = config.text_config.rope_parameters["rope_theta"]
+
     model = PaliGemmaForConditionalGeneration(config)
     model.load_state_dict(tensors, strict=False)
     model.tie_weights()
@@ -59,7 +60,7 @@ def calc_levenshtein_distance(word1: str, word2: str) -> int:
     for i in range(len(word1) - 1, -1, -1):
         for j in range(len(word2) -1, -1, -1):
             if word1[i] == word2[j]:
-                cache[i][j] = cache[i+1][j+1] 
+                cache[i][j] = cache[i+1][j+1]
             else:
                 cache[i][j] = 1 + min(cache[i+1][j], cache[i][j+1], cache[i+1][j+1])
     return cache[0][0]
